@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
-import { zEnrollmentBody,zEnrollmentPutBody } from "../libs/zodValidators.ts";
+import { z } from "zod";
+import { zEnrollmentBody } from "../libs/zodValidators.ts";
 
 import type { CustomRequest } from "../libs/types.ts";
 
@@ -12,6 +13,13 @@ import { PrismaClient } from "../../generated/prisma/client.ts";
 const prisma = new PrismaClient();
 
 const router = Router();
+
+// Schema สำหรับเปลี่ยนวิชา (PUT /enrollments)
+export const zEnrollmentPutBody = z.object({
+  studentId: z.string().min(1, "studentId is required"),
+  courseId: z.string().min(1, "courseId is required"),
+  newCourseId: z.string().min(1, "newCourseId is required"),
+});
 
 // GET /api/v3/enrollments
 // ADMIN: get all enrollments, STUDENT: get only his own enrollments
@@ -117,14 +125,16 @@ router.post(
   },
 );
 
+// 3.1 PUT /api/v3/enrollments, body = {studentId, courseId, newCourseId}
+// เปลี่ยนวิชาที่ลงทะเบียนไว้ (courseId -> newCourseId)
 router.put(
   "/",
   authenticateToken,
   checkRoles,
   async (req: CustomRequest, res: Response) => {
     try {
+      // 1. ตรวจสอบ body ด้วย zEnrollmentPutBody
       const result = zEnrollmentPutBody.safeParse(req.body);
-
       if (!result.success) {
         return res.status(400).json({
           success: false,
@@ -136,6 +146,7 @@ router.put(
       const { studentId, courseId, newCourseId } = result.data;
       const user = req.user;
 
+      // 2. Role ADMIN แก้ได้ทุกคน / Role STUDENT แก้ได้แค่ของตัวเอง
       if (user?.role === "STUDENT" && studentId !== user.studentId) {
         return res.status(403).json({
           success: false,
@@ -143,59 +154,64 @@ router.put(
         });
       }
 
+      // 3. วิชาใหม่ = วิชาเดิม
       if (courseId === newCourseId) {
         return res.status(400).json({
           success: false,
-          message: "New course must be different from current course",
+          message: "New course cannot be the same as current course",
         });
       }
 
-      const enrollment = await prisma.enrollment.findFirst({
+      // 4. ตรวจสอบว่ายังไม่ได้ลงวิชาเดิมไว้
+      const currentEnrollment = await prisma.enrollment.findFirst({
         where: { studentId, courseId },
       });
-
-      if (!enrollment) {
+      if (!currentEnrollment) {
         return res.status(404).json({
           success: false,
-          message: "Enrollment does not exists",
+          message: `Enrollment for course ${courseId} not found`,
         });
       }
 
+      // 5. ตรวจสอบว่าวิชาใหม่ไม่มีจริง
       const newCourse = await prisma.course.findUnique({
         where: { courseId: newCourseId },
       });
-
       if (!newCourse) {
         return res.status(404).json({
           success: false,
-          message: `Course ${newCourseId} does not exists`,
+          message: `New course ${newCourseId} does not exists`,
         });
       }
 
-      const duplicate = await prisma.enrollment.findFirst({
+      // 6. ตรวจสอบว่าลงวิชาใหม่ไว้แล้ว
+      const alreadyEnrolled = await prisma.enrollment.findFirst({
         where: { studentId, courseId: newCourseId },
       });
-
-      if (duplicate) {
+      if (alreadyEnrolled) {
         return res.status(409).json({
           success: false,
-          message: "Student has already enrolled in the new course",
+          message: `Student ${studentId} has already enrolled in ${newCourseId}`,
         });
       }
 
-      await prisma.enrollment.updateMany({
-        where: { studentId, courseId },
-        data: { courseId: newCourseId },
-      });
-
-      const updated = await prisma.enrollment.findFirst({
-        where: { studentId, courseId: newCourseId },
-      });
+      // ดำเนินการสลับวิชาผ่าน transaction
+      const [_, updatedEnrollment] = await prisma.$transaction([
+        prisma.enrollment.delete({
+          where: { id: currentEnrollment.id },
+        }),
+        prisma.enrollment.create({
+          data: {
+            studentId,
+            courseId: newCourseId,
+          },
+        }),
+      ]);
 
       return res.status(200).json({
         success: true,
-        message: "Enrollment updated successfully",
-        data: updated,
+        message: "Course updated successfully",
+        data: updatedEnrollment,
       });
     } catch (err) {
       return res.status(500).json({
@@ -207,14 +223,16 @@ router.put(
   },
 );
 
+// 3.2 DELETE /api/v3/enrollments, body = {studentId, courseId}
+// ยกเลิกการลงทะเบียน (drop)
 router.delete(
   "/",
   authenticateToken,
   checkRoles,
   async (req: CustomRequest, res: Response) => {
     try {
+      // 1. ตรวจสอบ req.body
       const result = zEnrollmentBody.safeParse(req.body);
-
       if (!result.success) {
         return res.status(400).json({
           success: false,
@@ -226,6 +244,7 @@ router.delete(
       const { studentId, courseId } = result.data;
       const user = req.user;
 
+      // 2. Role ADMIN ลบได้ทุกคน / Role STUDENT ลบได้แค่ของตัวเอง
       if (user?.role === "STUDENT" && studentId !== user.studentId) {
         return res.status(403).json({
           success: false,
@@ -233,25 +252,26 @@ router.delete(
         });
       }
 
+      // 3. ตรวจสอบว่าพบการลงทะเบียนหรือไม่
       const enrollment = await prisma.enrollment.findFirst({
         where: { studentId, courseId },
       });
-
       if (!enrollment) {
         return res.status(404).json({
           success: false,
-          message: "Enrollment does not exists",
+          message: "Enrollment not found",
         });
       }
 
-      await prisma.enrollment.deleteMany({
-        where: { studentId, courseId },
+      // ลบรายการลงทะเบียน
+      const deleted = await prisma.enrollment.delete({
+        where: { id: enrollment.id },
       });
 
       return res.status(200).json({
         success: true,
-        message: "Enrollment deleted successfully",
-        data: enrollment,
+        message: "Enrollment dropped successfully",
+        data: deleted,
       });
     } catch (err) {
       return res.status(500).json({

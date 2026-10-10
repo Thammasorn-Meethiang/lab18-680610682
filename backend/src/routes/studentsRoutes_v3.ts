@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { zStudentPostBody, zStudentId,zStudentPutBody } from "../libs/zodValidators.js";
+import { zStudentPostBody, zStudentPutBody, zStudentId } from "../libs/zodValidators.js";
 
 import type { Student, CustomRequest } from "../libs/types.js";
 
@@ -16,7 +16,6 @@ const router = Router();
 
 // GET /api/v3/students
 // get students (by program) with files
-
 router.get(
   "/",
   authenticateToken,
@@ -183,14 +182,18 @@ router.post(
   },
 );
 
+// 1.1 PUT /api/v3/students
+// สำหรับแก้ไขข้อมูลนักศึกษา
 router.put(
   "/",
   authenticateToken,
   checkRoles,
   async (req: CustomRequest, res: Response) => {
     try {
-      const result = zStudentPutBody.safeParse(req.body);
+      const user = req.user;
 
+      // ตรวจสอบข้อมูลด้วย zStudentPutBody
+      const result = zStudentPutBody.safeParse(req.body);
       if (!result.success) {
         return res.status(400).json({
           success: false,
@@ -199,40 +202,45 @@ router.put(
         });
       }
 
-      const { studentId, ...data } = result.data;
+      const { studentId, firstName, lastName, program, interests, emails } = result.data;
 
-      const user = req.user;
-
-      if (
-        user?.role === "STUDENT" &&
-        user.studentId !== studentId
-      ) {
+      // Role ADMIN แก้ไขได้ทุกคน / Role STUDENT แก้ไขได้แค่ข้อมูลของตัวเอง
+      if (user?.role === "STUDENT" && user.studentId !== studentId) {
         return res.status(403).json({
           success: false,
           message: "Forbidden access",
         });
       }
 
-      const student = await prisma.student.findUnique({
+      // ตรวจสอบว่ามีนักศึกษาคนนี้หรือไม่
+      const existingStudent = await prisma.student.findUnique({
         where: { studentId },
       });
-
-      if (!student) {
+      if (!existingStudent) {
         return res.status(404).json({
           success: false,
           message: "Student does not exists",
         });
       }
 
-      const updated = await prisma.student.update({
+      // แก้เฉพาะ field ที่ส่งมา
+     // เตรียมข้อมูลที่จะอัปเดต (แก้เฉพาะ field ที่ส่งมา)
+      const updateData: Record<string, any> = {};
+      if (firstName !== undefined) updateData.firstName = firstName;
+      if (lastName !== undefined) updateData.lastName = lastName;
+      if (program !== undefined) updateData.program = program;
+      if (interests !== undefined) updateData.interests = interests;
+      if (emails !== undefined) updateData.emails = emails;
+
+      const updatedStudent = await prisma.student.update({
         where: { studentId },
-        data,
+        data: updateData,
       });
 
       return res.status(200).json({
         success: true,
         message: "Student updated successfully",
-        data: updated,
+        data: updatedStudent,
       });
     } catch (err) {
       return res.status(500).json({
@@ -244,34 +252,36 @@ router.put(
   },
 );
 
-router.delete( "/",authenticateToken,checkRoleAdmin,
+// 1.2 DELETE /api/v3/students
+// สำหรับลบนักศึกษา (เฉพาะ ADMIN)
+router.delete(
+  "/",
+  authenticateToken,
+  checkRoleAdmin,
   async (req: CustomRequest, res: Response) => {
     try {
-      const result = zStudentId.safeParse(req.body?.studentId);
+      const { studentId } = req.body;
 
-      if (!result.success) {
+      if (!studentId) {
         return res.status(400).json({
           success: false,
-          message: "Validation failed",
-          errors: result.error.issues[0]?.message,
+          message: "studentId is required",
         });
       }
 
-      const studentId = result.data;
-
-      const student = await prisma.student.findUnique({
+      // ตรวจสอบว่ามีนักศึกษาคนนี้หรือไม่
+      const existingStudent = await prisma.student.findUnique({
         where: { studentId },
       });
-
-      if (!student) {
+      if (!existingStudent) {
         return res.status(404).json({
           success: false,
           message: "Student does not exists",
-          data: null,
         });
       }
 
-      const [, deletedStudent] = await prisma.$transaction([
+      // ลบ Enrollment ที่อ้างอิง studentId ก่อน แล้วค่อยลบนักศึกษา โดยใช้ prisma.$transaction
+      const [_, deletedStudent] = await prisma.$transaction([
         prisma.enrollment.deleteMany({
           where: { studentId },
         }),
@@ -282,7 +292,7 @@ router.delete( "/",authenticateToken,checkRoleAdmin,
 
       return res.status(200).json({
         success: true,
-        message: "Student deleted successfully",
+        message: "Student and related enrollments deleted successfully",
         data: deletedStudent,
       });
     } catch (err) {
