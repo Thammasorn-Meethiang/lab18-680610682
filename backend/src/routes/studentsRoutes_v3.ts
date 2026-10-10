@@ -1,5 +1,5 @@
 import { Router, type Request, type Response } from "express";
-import { zStudentPostBody, zStudentId } from "../libs/zodValidators.js";
+import { zStudentPostBody, zStudentId,zStudentPutBody } from "../libs/zodValidators.js";
 
 import type { Student, CustomRequest } from "../libs/types.js";
 
@@ -177,6 +177,118 @@ router.post(
       return res.status(500).json({
         success: false,
         message: "Somthing is wrong, please try again",
+        error: err,
+      });
+    }
+  },
+);
+
+router.put(
+  "/",
+  authenticateToken,
+  checkRoles,
+  async (req: CustomRequest, res: Response) => {
+    try {
+      const result = zStudentPutBody.safeParse(req.body);
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          message: "Validation failed",
+          errors: result.error.issues[0]?.message,
+        });
+      }
+
+      const { studentId, ...data } = result.data;
+
+      const user = req.user;
+
+      if (
+        user?.role === "STUDENT" &&
+        user.studentId !== studentId
+      ) {
+        return res.status(403).json({
+          success: false,
+          message: "Forbidden access",
+        });
+      }
+
+      const student = await prisma.student.findUnique({
+        where: { studentId },
+      });
+
+      if (!student) {
+        return res.status(404).json({
+          success: false,
+          message: "Student does not exists",
+        });
+      }
+
+      const updated = await prisma.student.update({
+        where: { studentId },
+        data,
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: "Student updated successfully",
+        data: updated,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        success: false,
+        message: "Something is wrong, please try again",
+        error: err,
+      });
+    }
+  },
+);
+
+router.delete( "/",authenticateToken,checkRoleAdmin,
+  async (req: CustomRequest, res: Response) => {
+    try {
+      const result = zStudentId.safeParse(req.body?.studentId);
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          message: "Validation failed",
+          errors: result.error.issues[0]?.message,
+        });
+      }
+
+      const studentId = result.data;
+
+      const student = await prisma.student.findUnique({
+        where: { studentId },
+      });
+
+      if (!student) {
+        return res.status(404).json({
+          success: false,
+          message: "Student does not exists",
+          data: null,
+        });
+      }
+
+      const [, deletedStudent] = await prisma.$transaction([
+        prisma.enrollment.deleteMany({
+          where: { studentId },
+        }),
+        prisma.student.delete({
+          where: { studentId },
+        }),
+      ]);
+
+      return res.status(200).json({
+        success: true,
+        message: "Student deleted successfully",
+        data: deletedStudent,
+      });
+    } catch (err) {
+      return res.status(500).json({
+        success: false,
+        message: "Something is wrong, please try again",
         error: err,
       });
     }

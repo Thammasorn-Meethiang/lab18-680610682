@@ -44,7 +44,7 @@ export default function HomePage() {
       </Card>
 
       <p className="text-center text-xs text-muted-foreground">
-        จัดทำโดย ผู้สอน (Lecture)
+        จัดทำโดย ธรรมสรณ์ มีเที่ยง รหัส 680610682
       </p>
     </div>
   );

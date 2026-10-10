@@ -74,11 +74,11 @@ export const zStudentPostBody = z.object({
 
 export const zStudentPutBody = z.object({
   studentId: zStudentId,
-  firstName: zFirstName.nullish(), //firstName can be null or undefined
-  lastName: zLastName.nullish(), //lastName can be null or undefined
-  program: zProgram.nullish(), //program can be null or undefined
-  interests: zInterests.nullish(),
-  emails: zEmails.nullish(),
+  firstName: zFirstName.optional(), //firstName can be null or undefined
+  lastName: zLastName.optional(), //lastName can be null or undefined
+  program: zProgram.optional(), //program can be null or undefined
+  interests: zInterests.optional(),
+  emails: zEmails.optional(),
 });
 
 ////// Enrollment Validators //////
@@ -86,6 +86,10 @@ export const zStudentPutBody = z.object({
 export const zEnrollmentBody = z.object({
   studentId: zStudentId,
   courseId: zCourseId,
+});
+
+export const zEnrollmentPutBody = zEnrollmentBody.extend({
+  newCourseId: zCourseId,
 });
 
 ////// User Validators //////
